@@ -1,14 +1,21 @@
 import { useState } from "react";
 import { ExtractProcessor } from "@/components/ExtractProcessor";
 import { ExtractList } from "@/components/ExtractList";
+import { FinancialSummary } from "@/components/FinancialSummary";
 
 import pathworkLogo from "@/assets/pathwork-logo.png";
 
 const Index = () => {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [summaryRefreshTrigger, setSummaryRefreshTrigger] = useState(0);
 
   const handleExtractSaved = () => {
     setRefreshTrigger(prev => prev + 1);
+    setSummaryRefreshTrigger(prev => prev + 1); // Also refresh summary when new extracts are added
+  };
+
+  const handleMetadataChange = () => {
+    setSummaryRefreshTrigger(prev => prev + 1);
   };
 
   return (
@@ -36,9 +43,13 @@ const Index = () => {
 
           <div className="grid gap-8 lg:grid-cols-2">
             <ExtractProcessor onExtractSaved={handleExtractSaved} />
-            <ExtractList refreshTrigger={refreshTrigger} />
+            <ExtractList
+              refreshTrigger={refreshTrigger}
+              onMetadataChange={handleMetadataChange}
+            />
           </div>
 
+          <FinancialSummary refreshTrigger={summaryRefreshTrigger} />
 
         </div>
       </main>
