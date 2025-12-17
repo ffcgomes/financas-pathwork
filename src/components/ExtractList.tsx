@@ -1,12 +1,27 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { FileText, Trash2, RefreshCw, Eye, GitMerge } from "lucide-react";
+import { FileText, Trash2, RefreshCw, Eye, GitMerge, Check, ChevronsUpDown, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
+import { cn } from "@/lib/utils";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
 interface ExtractFile {
   name: string;
@@ -23,6 +38,12 @@ interface ExtractRecord {
   cpf?: string;
   cnpj?: string;
   nome?: string;
+  type?: 'C' | 'D'; // Add type field
+}
+
+interface ExtractMetadata {
+  options: string[];
+  mappings: { [key: string]: string };
 }
 
 interface ExtractListProps {
@@ -35,6 +56,68 @@ export const ExtractList = ({ refreshTrigger = 0 }: ExtractListProps) => {
   const [deletingFile, setDeletingFile] = useState<string | null>(null);
   const [viewingExtract, setViewingExtract] = useState<{ name: string; records: ExtractRecord[] } | null>(null);
   const [isMerging, setIsMerging] = useState(false);
+  const [metadata, setMetadata] = useState<ExtractMetadata>({ options: [], mappings: {} });
+
+  const loadMetadata = async () => {
+    try {
+      const { data, error } = await supabase.storage
+        .from('extratos')
+        .download('metadata.json');
+
+      if (error) {
+        // Check if file not found based on message or error object structure
+        // Supabase storage often returns a 404-like error object but types might vary
+        const err = error as any;
+        if (err.statusCode === '404' || err.message?.includes('not found') || err.message?.includes('The resource was not found')) {
+          // File doesn't exist yet, that's fine
+          console.log('Metadata file not found, starting fresh.');
+          return;
+        }
+        throw error;
+      }
+
+      const text = await data.text();
+      const json = JSON.parse(text);
+      if (json && Array.isArray(json.options) && typeof json.mappings === 'object') {
+        setMetadata(json);
+      }
+    } catch (error: any) {
+      console.error('Error loading metadata:', error);
+      // Don't toast for this, as it might just be missing
+    }
+  };
+
+  const saveMetadata = async (newMetadata: ExtractMetadata) => {
+    try {
+      const blob = new Blob([JSON.stringify(newMetadata, null, 2)], { type: 'application/json' });
+      const { error } = await supabase.storage
+        .from('extratos')
+        .upload('metadata.json', blob, { upsert: true });
+
+      if (error) throw error;
+      setMetadata(newMetadata);
+    } catch (error: any) {
+      console.error('Error saving metadata:', error);
+      toast.error('Erro ao salvar categorias');
+    }
+  };
+
+  const handleCategorySelect = (record: ExtractRecord, category: string) => {
+    // 1. Normalize description key
+    const descriptionKey = record.historico.trim();
+
+    // 2. Update options if new
+    const uniqueOptions = Array.from(new Set([...metadata.options, category])).sort();
+
+    // 3. Update mapping
+    const newMappings = { ...metadata.mappings, [descriptionKey]: category };
+
+    // 4. Save
+    saveMetadata({
+      options: uniqueOptions,
+      mappings: newMappings
+    });
+  };
 
   const loadExtracts = async () => {
     setIsLoading(true);
@@ -67,47 +150,32 @@ export const ExtractList = ({ refreshTrigger = 0 }: ExtractListProps) => {
     }
   };
 
+  // ... (keeping parseExtractRecords and other logic same, omitted for brevity, will re-include in final replacement) ...
+  // Actually, I need to include the full file content or use proper chunk replacement.
+  // Since I'm replacing the whole file content to be safe and clean, I will include everything.
+
   const parseExtractRecords = (text: string): ExtractRecord[] => {
     const lines = text.split('\n');
     const records: ExtractRecord[] = [];
 
-    // Helper function to extract CPF/CNPJ and Nome from historico
     const extractCpfCnpjNome = (historico: string): { cpf?: string; cnpj?: string; nome?: string } => {
-      // Remove date/time prefix if present (DD/MM HH:MM or DD/MM/YYYY HH:MM:SS)
       const withoutDateTime = historico
         .replace(/^\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}(:\d{2})?\s+/, '')
         .replace(/^\d{2}\/\d{2}\s+\d{2}:\d{2}\s+/, '');
 
-      // Check if it starts with a sequence of 11 or 14 digits (CPF or CNPJ) without formatting
       const cpfCnpjMatch = withoutDateTime.match(/^(\d{11,14})\s+(.+)$/);
 
       if (cpfCnpjMatch) {
         const digits = cpfCnpjMatch[1];
         let cpf = '', cnpj = '';
-
-        // Logic: CNPJ if 14 digits and digits at index 8,9,10 are '000'
-        // Index is 0-based, so 8,9,10 are the 9th, 10th, 11th digits.
-        // String substring(8, 11) gets characters at 8, 9, 10.
         if (digits.length === 14 && digits.substring(8, 11) === '000') {
           cnpj = digits;
         } else {
-          // Keep only the last 11 digits for CPF
           cpf = digits.length > 11 ? digits.substring(digits.length - 11) : digits;
         }
-
-        return {
-          cpf,
-          cnpj,
-          nome: cpfCnpjMatch[2].trim()
-        };
+        return { cpf, cnpj, nome: cpfCnpjMatch[2].trim() };
       }
 
-      // Check if it starts with formatted number (with dots/dashes) followed by a name
-      // This is a bit looser, could be CPF or CNPJ formatted.
-      // Let's assume formatted ones: if ends in /0001-XX or similar, it's CNPJ.
-      // But typically statements have raw numbers. Let's keep existing simple check for formatted 
-      // but maybe try to distinguish? The prompt was specific about the 14 digits and 000 logic.
-      // For formatted, let's strip non-digits and apply the same logic?
       const formattedNumberMatch = withoutDateTime.match(/^([\d.\/\-]+)\s+([A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜÝ].+)$/);
 
       if (formattedNumberMatch) {
@@ -117,9 +185,7 @@ export const ExtractList = ({ refreshTrigger = 0 }: ExtractListProps) => {
         if (rawDigits.length === 14 && rawDigits.substring(8, 11) === '000') {
           cnpj = formattedNumberMatch[1];
         } else {
-          // If it looks like a formatted CPF (11 digits), put in CPF column
           if (rawDigits.length === 11 || (rawDigits.length === 14 && rawDigits.substring(8, 11) !== '000')) {
-            // For formatted matching, if we need to truncate, we better use the raw digits to avoid broken formatting
             if (rawDigits.length > 11) {
               cpf = rawDigits.substring(rawDigits.length - 11);
             } else {
@@ -129,42 +195,23 @@ export const ExtractList = ({ refreshTrigger = 0 }: ExtractListProps) => {
         }
 
         if (cpf || cnpj) {
-          return {
-            cpf,
-            cnpj,
-            nome: formattedNumberMatch[2].trim()
-          }
+          return { cpf, cnpj, nome: formattedNumberMatch[2].trim() }
         }
 
-        return {
-          nome: formattedNumberMatch[2].trim()
-        };
+        return { nome: formattedNumberMatch[2].trim() };
       }
 
-      // Check if the text looks like a person's name
-      // Accept names in uppercase, mixed case, or proper case
       const trimmedText = withoutDateTime.trim();
-
-      // Pattern matches names that:
-      // - Start with a letter (upper or lower)
-      // - Contain at least one space and another word
-      // - Don't start with common descriptive terms
       const looksLikeName = /^[A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜÝ][A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜÝa-zàáâãäåçèéêëìíîïñòóôõöùúûüý]+(\s+[A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜÝ][A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜÝa-zàáâãäåçèéêëìíîïñòóôõöùúûüý.]*)+$/.test(trimmedText);
-
-      // Exclude common descriptive terms
       const isDescriptive = /^(tar\.|rende|tarifa|pagamento|transferencia|saldo|lancamento)/i.test(trimmedText);
 
       if (looksLikeName && !isDescriptive) {
-        return {
-          nome: trimmedText
-        };
+        return { nome: trimmedText };
       }
 
-      // If it's descriptive text or doesn't look like a name, return empty
       return {};
     };
 
-    // Find the header line - check for both formats (original and merged)
     let headerIndex = -1;
     let isMergedFormat = false;
 
@@ -172,7 +219,6 @@ export const ExtractList = ({ refreshTrigger = 0 }: ExtractListProps) => {
       const line = lines[i];
       if (line.includes('Dt. movimento')) {
         headerIndex = i;
-        // Check if it's the merged format (without "Dt. balancete")
         isMergedFormat = !line.includes('Dt. balancete');
         break;
       }
@@ -180,27 +226,14 @@ export const ExtractList = ({ refreshTrigger = 0 }: ExtractListProps) => {
 
     if (headerIndex === -1) return records;
 
-    // Parse records after header until "Lançamentos futuros"
     for (let i = headerIndex + 1; i < lines.length; i++) {
       const line = lines[i].trim();
       const lineLower = line.toLowerCase();
 
-      // Stop processing when reaching "Lançamentos futuros"
-      if (lineLower.includes('lançamentos futuros') ||
-        lineLower.includes('lancamentos futuros')) {
-        break;
-      }
-
-      // Skip "Saldo Anterior" and "S A L D O" lines
-      if (lineLower.includes('saldo anterior') ||
-        lineLower.replace(/\s/g, '').includes('saldo')) {
-        continue;
-      }
-
+      if (lineLower.includes('lançamentos futuros') || lineLower.includes('lancamentos futuros')) break;
+      if (lineLower.includes('saldo anterior') || lineLower.replace(/\s/g, '').includes('saldo')) continue;
       if (!line) continue;
-      if (line.includes('===') || line.includes('---') || lineLower.includes('total')) {
-        continue;
-      }
+      if (line.includes('===') || line.includes('---') || lineLower.includes('total')) continue;
 
       const parts = line.split(/\s{2,}/);
 
@@ -208,9 +241,24 @@ export const ExtractList = ({ refreshTrigger = 0 }: ExtractListProps) => {
       if (parts.length >= 4 && parts[0].match(/\d{2}\/\d{2}\/\d{4}/)) {
         if (isMergedFormat) {
           // Merged format: all data in one line
-          // Format: dt_movimento  ag_origem  lote  historico  documento  valor
+          // Format: dt_movimento  ag_origem  lote  historico  documento  valor [Type]
           const rawHistorico = parts[3]?.trim() || '';
           const { cpf, cnpj, nome } = extractCpfCnpjNome(rawHistorico);
+
+          let valor = parts[5]?.trim() || '';
+          let type: 'D' | 'C' = 'C';
+
+          // Check for D/C suffix in value or separate part if space separated
+          // First check parts[5] itself
+          if (valor.toUpperCase().endsWith('D') || valor.startsWith('-')) {
+            type = 'D';
+          } else if (parts[6]?.trim().toUpperCase() === 'D') {
+            // Check if next part is D (if split by space happened)
+            type = 'D';
+          }
+
+          // Always clean the value of the suffix
+          valor = valor.replace(/\s*[DC]$/i, '').trim();
 
           records.push({
             dt_movimento: parts[0]?.trim() || '',
@@ -218,15 +266,15 @@ export const ExtractList = ({ refreshTrigger = 0 }: ExtractListProps) => {
             lote: parts[2]?.trim() || '',
             historico: rawHistorico,
             documento: parts[4]?.trim() || '',
-            valor: parts[5]?.trim() || '',
+            valor,
+            type,
             cpf,
             cnpj,
             nome,
           });
         } else {
-          // Original format: data in first line, historico in second line
-          // Format: dt_movimento  dt_balancete  ag_origem  lote  documento  valor  saldo
-          // Get historico from next line (skip empty lines)
+          // Original format parsing (already updated in previous steps, just keeping structure)
+          // ...
           let historico = '';
           let nextLineIndex = i + 1;
           while (nextLineIndex < lines.length) {
@@ -241,17 +289,24 @@ export const ExtractList = ({ refreshTrigger = 0 }: ExtractListProps) => {
           // Extract valor (Valor R$) from the line using Brazilian currency pattern
           // This avoids mixing it up with the Documento column
           let valor = '';
-          const moneyMatches = line.match(/-?\d{1,3}(?:\.\d{3})*,\d{2}/g);
+          let type: 'D' | 'C' = 'C'; // Default to Credit
+          // Updated regex to capture optional 'D' or 'C' suffix (with or without space)
+          const moneyMatches = line.match(/-?\d{1,3}(?:\.\d{3})*,\d{2}(?:\s*[DC])?/gi);
           if (moneyMatches && moneyMatches.length > 0) {
-            if (moneyMatches.length >= 2) {
-              // When there are two monetary values, the penultimate is usually Valor R$ and the last is Saldo
-              valor = moneyMatches[moneyMatches.length - 2];
-            } else {
-              valor = moneyMatches[0];
+            const lastMatch = moneyMatches[moneyMatches.length - 1];
+            valor = lastMatch;
+
+            // Determine type based on 'D' suffix or negative sign
+            if (lastMatch.toUpperCase().endsWith('D') || lastMatch.startsWith('-')) {
+              type = 'D';
             }
+            // Remove 'D' or 'C' suffix and trim
+            valor = valor.replace(/\s*[DC]$/i, '').trim();
           } else {
             // Fallback to positional parsing if pattern is not found
             valor = parts[5]?.trim() || '';
+            type = valor.toUpperCase().endsWith('D') || valor.startsWith('-') ? 'D' : 'C';
+            valor = valor.replace(/\s*[DC]$/i, '').trim();
           }
 
           const { cpf, cnpj, nome } = extractCpfCnpjNome(historico);
@@ -262,13 +317,13 @@ export const ExtractList = ({ refreshTrigger = 0 }: ExtractListProps) => {
             lote: parts[3]?.trim() || '',
             documento: parts[4]?.trim() || '',
             valor,
+            type, // Add type to record
             historico: historico,
             cpf,
             cnpj,
             nome,
           });
 
-          // Skip the historico line we just processed
           i = nextLineIndex;
         }
       }
@@ -297,10 +352,8 @@ export const ExtractList = ({ refreshTrigger = 0 }: ExtractListProps) => {
           .trim()
           .toLowerCase();
 
-      // Filter out the merged file itself to avoid duplication
       const extractsToMerge = extracts.filter(e => e.name !== 'Extratos.txt');
 
-      // Sort extracts by date (from filename in format dd_mm_yyyy.txt)
       const sortedExtracts = extractsToMerge.sort((a, b) => {
         const parseFileName = (name: string) => {
           const match = name.match(/(\d{2})_(\d{2})_(\d{4})/);
@@ -314,7 +367,6 @@ export const ExtractList = ({ refreshTrigger = 0 }: ExtractListProps) => {
         return dateA.getTime() - dateB.getTime();
       });
 
-      // Load and parse all extracts
       for (let index = 0; index < sortedExtracts.length; index++) {
         const extract = sortedExtracts[index];
         const { data, error } = await supabase.storage
@@ -326,7 +378,6 @@ export const ExtractList = ({ refreshTrigger = 0 }: ExtractListProps) => {
         const text = await data.text();
         const records = parseExtractRecords(text);
 
-        // Add only unique records (ignorando diferenças de agência/lote e pequenas variações de formatação)
         for (const record of records) {
           const key = [
             record.dt_movimento,
@@ -350,7 +401,6 @@ export const ExtractList = ({ refreshTrigger = 0 }: ExtractListProps) => {
         return;
       }
 
-      // Create merged extract content
       const header = `Extrato Consolidado
 Gerado em: ${new Date().toLocaleString('pt-BR')}
 
@@ -365,14 +415,13 @@ Dt. movimento    Ag. origem        Lote     Histórico                          
           record.lote,
           record.historico,
           record.documento,
-          record.valor
+          // Append Type to Valor for persistence
+          record.valor + (record.type === 'D' ? ' D' : ' C')
         ];
         return parts.join('  ');
       });
 
       const mergedContent = header + recordLines.join('\n');
-
-      // Save merged extract
       const blob = new Blob([mergedContent], { type: 'text/plain' });
       const fileName = 'Extratos.txt';
 
@@ -431,6 +480,7 @@ Dt. movimento    Ag. origem        Lote     Histórico                          
 
   useEffect(() => {
     loadExtracts();
+    loadMetadata();
   }, [refreshTrigger]);
 
   const formatDate = (dateString: string) => {
@@ -441,6 +491,79 @@ Dt. movimento    Ag. origem        Lote     Histórico                          
       hour: '2-digit',
       minute: '2-digit'
     });
+  };
+
+  const OriginDestinationSelector = ({ record }: { record: ExtractRecord }) => {
+    const [open, setOpen] = useState(false);
+    const [searchValue, setSearchValue] = useState("")
+
+    // Determine current value: check mapping first
+    const descriptionKey = record.historico.trim();
+    const currentValue = metadata.mappings[descriptionKey] || "";
+
+    const filteredOptions = metadata.options.filter(opt =>
+      opt.toLowerCase().includes(searchValue.toLowerCase())
+    );
+
+    return (
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className="w-[200px] justify-between text-xs h-8"
+          >
+            {currentValue || "Selecionar..."}
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[200px] p-0">
+          <Command>
+            <CommandInput
+              placeholder="Buscar ou criar..."
+              value={searchValue}
+              onValueChange={setSearchValue}
+            />
+            <CommandList>
+              <CommandGroup>
+                {filteredOptions.length === 0 && searchValue && (
+                  <CommandItem
+                    onSelect={() => {
+                      handleCategorySelect(record, searchValue);
+                      setOpen(false);
+                      setSearchValue("");
+                    }}
+                    className="cursor-pointer"
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Criar "{searchValue}"
+                  </CommandItem>
+                )}
+                {filteredOptions.map((option) => (
+                  <CommandItem
+                    key={option}
+                    value={option}
+                    onSelect={(currentValue) => {
+                      handleCategorySelect(record, option); // Use exact option casing
+                      setOpen(false);
+                    }}
+                  >
+                    <Check
+                      className={cn(
+                        "mr-2 h-4 w-4",
+                        currentValue === option ? "opacity-100" : "opacity-0"
+                      )}
+                    />
+                    {option}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+    );
   };
 
   return (
@@ -469,7 +592,10 @@ Dt. movimento    Ag. origem        Lote     Histórico                          
             <Button
               variant="outline"
               size="sm"
-              onClick={loadExtracts}
+              onClick={() => {
+                loadExtracts();
+                loadMetadata();
+              }}
               disabled={isLoading}
             >
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
@@ -520,43 +646,47 @@ Dt. movimento    Ag. origem        Lote     Histórico                          
       </CardContent>
 
       <Dialog open={!!viewingExtract} onOpenChange={() => setViewingExtract(null)}>
-        <DialogContent className="max-w-7xl max-h-[80vh]">
+        <DialogContent className="max-w-[95vw] h-[90vh] flex flex-col">
           <DialogHeader>
             <DialogTitle className="font-mono">{viewingExtract?.name}</DialogTitle>
             <DialogDescription>
               {viewingExtract?.records.length} registro(s) encontrado(s)
             </DialogDescription>
           </DialogHeader>
-          <ScrollArea className="h-[60vh]">
+          <div className="flex-1 overflow-auto border rounded-md">
             <Table>
-              <TableHeader>
+              <TableHeader className="sticky top-0 bg-background z-10">
                 <TableRow>
-                  <TableHead>Dt. Movimento</TableHead>
-                  <TableHead>Ag. Origem</TableHead>
-                  <TableHead>Lote</TableHead>
-                  <TableHead>Histórico</TableHead>
-                  <TableHead>CPF</TableHead>
-                  <TableHead>CNPJ</TableHead>
-                  <TableHead>Nome</TableHead>
+                  <TableHead className="w-[100px]">Dt. Movimento</TableHead>
+                  <TableHead>Origem/Destino</TableHead>
+
+                  <TableHead className="min-w-[300px]">Histórico</TableHead>
+                  <TableHead>CPF/CNPJ</TableHead>
+
+
                   <TableHead className="text-right">Valor</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {viewingExtract?.records.map((record, index) => (
                   <TableRow key={index}>
-                    <TableCell className="font-mono text-xs">{record.dt_movimento}</TableCell>
-                    <TableCell className="font-mono text-xs">{record.ag_origem}</TableCell>
-                    <TableCell className="font-mono text-xs">{record.lote}</TableCell>
+                    <TableCell className="font-mono text-xs whitespace-nowrap">{record.dt_movimento}</TableCell>
+                    <TableCell className="w-[220px]">
+                      <OriginDestinationSelector record={record} />
+                    </TableCell>
+
                     <TableCell className="text-xs">{record.historico}</TableCell>
-                    <TableCell className="font-mono text-xs">{record.cpf || '-'}</TableCell>
-                    <TableCell className="font-mono text-xs">{record.cnpj || '-'}</TableCell>
-                    <TableCell className="text-xs">{record.nome || '-'}</TableCell>
-                    <TableCell className="font-mono text-xs text-right">{record.valor}</TableCell>
+                    <TableCell className="font-mono text-xs whitespace-nowrap">{record.cpf || record.cnpj || '-'}</TableCell>
+
+
+                    <TableCell className={`font-mono text-xs text-right whitespace-nowrap ${record.type === 'D' ? 'text-red-600' : 'text-blue-600'}`}>
+                      {record.valor.replace('-', '')} {record.type}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
-          </ScrollArea>
+          </div>
         </DialogContent>
       </Dialog>
     </Card>

@@ -11,11 +11,10 @@ interface ExtractProcessorProps {
 }
 
 export const ExtractProcessor = ({ onExtractSaved }: ExtractProcessorProps) => {
-  const [extractText, setExtractText] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
-  const [savedFileName, setSavedFileName] = useState("");
+  const [savedFileNames, setSavedFileNames] = useState<string[]>([]);
   const [isDragging, setIsDragging] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   const parseExtractDate = (text: string): string | null => {
     const lines = text.split('\n');
@@ -50,16 +49,10 @@ export const ExtractProcessor = ({ onExtractSaved }: ExtractProcessorProps) => {
     return null;
   };
 
-  const handleFileRead = async (file: File) => {
-    const text = await file.text();
-    setExtractText(text);
-    setSelectedFile(file);
-  };
-
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      await handleFileRead(file);
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      setSelectedFiles(Array.from(e.target.files));
+      setSavedFileNames([]);
     }
   };
 
@@ -73,62 +66,79 @@ export const ExtractProcessor = ({ onExtractSaved }: ExtractProcessorProps) => {
     setIsDragging(false);
   };
 
-  const handleDrop = async (e: React.DragEvent) => {
+  const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
 
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      await handleFileRead(file);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      setSelectedFiles(Array.from(e.dataTransfer.files));
+      setSavedFileNames([]);
     }
   };
 
   const saveExtract = async () => {
-    if (!extractText.trim()) {
-      toast.error("Por favor, selecione um arquivo de extrato");
+    if (selectedFiles.length === 0) {
+      toast.error("Por favor, selecione pelo menos um arquivo de extrato");
       return;
     }
 
     setIsProcessing(true);
+    const successfullySaved: string[] = [];
+    const errors: string[] = [];
 
     try {
-      // Filter out lines containing prohibited terms
-      const prohibitedTerms = ["Rende Facil", "Rende Fácil", "BB Rende", "BB Rende Fácil"];
-      const filteredText = extractText
-        .split('\n')
-        .filter(line => !prohibitedTerms.some(term => line.includes(term)))
-        .join('\n');
+      for (const file of selectedFiles) {
+        try {
+          const text = await file.text();
 
-      // Parse date from extract
-      const fileName = parseExtractDate(filteredText);
-      if (!fileName) {
-        toast.error("Não foi possível extrair data/hora do extrato");
-        setIsProcessing(false);
-        return;
+          // Filter out lines containing prohibited terms
+          const prohibitedTerms = ["Rende Facil", "Rende Fácil", "BB Rende", "BB Rende Fácil"];
+          const filteredText = text
+            .split('\n')
+            .filter(line => !prohibitedTerms.some(term => line.includes(term)))
+            .join('\n');
+
+          // Parse date from extract
+          const fileName = parseExtractDate(filteredText);
+          if (!fileName) {
+            errors.push(`${file.name}: Não foi possível extrair data/hora`);
+            continue;
+          }
+
+          // Save extract file to storage (upsert to allow overwrite)
+          const blob = new Blob([filteredText], { type: 'text/plain' });
+          const { error: uploadError } = await supabase.storage
+            .from('extratos')
+            .upload(`${fileName}.txt`, blob, {
+              upsert: true
+            });
+
+          if (uploadError) throw uploadError;
+          successfullySaved.push(fileName);
+
+        } catch (error: any) {
+          console.error(`Error saving file ${file.name}:`, error);
+          errors.push(`${file.name}: ${error.message}`);
+        }
       }
 
-      // Save extract file to storage (upsert to allow overwrite)
-      const blob = new Blob([filteredText], { type: 'text/plain' });
-      const { error: uploadError } = await supabase.storage
-        .from('extratos')
-        .upload(`${fileName}.txt`, blob, {
-          upsert: true
-        });
+      setSavedFileNames(successfullySaved);
 
-      if (uploadError) throw uploadError;
+      if (successfullySaved.length > 0) {
+        toast.success(`${successfullySaved.length} extrato(s) salvo(s) com sucesso`);
+        setSelectedFiles([]);
+        if (onExtractSaved) {
+          onExtractSaved();
+        }
+      }
 
-      setSavedFileName(fileName);
-      toast.success(`Extrato salvo com sucesso: ${fileName}.txt`);
-      setExtractText("");
-      setSelectedFile(null);
-
-      if (onExtractSaved) {
-        onExtractSaved();
+      if (errors.length > 0) {
+        errors.forEach(err => toast.error(err));
       }
 
     } catch (error: any) {
-      console.error('Error saving extract:', error);
-      toast.error(`Erro ao salvar extrato: ${error.message}`);
+      console.error('Critical error saving extracts:', error);
+      toast.error(`Erro crítico: ${error.message}`);
     } finally {
       setIsProcessing(false);
     }
@@ -140,10 +150,10 @@ export const ExtractProcessor = ({ onExtractSaved }: ExtractProcessorProps) => {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Upload className="w-5 h-5" />
-            Salvar Extrato
+            Salvar Extrato(s)
           </CardTitle>
           <CardDescription>
-            Cole o texto completo do extrato bancário abaixo
+            Arraste ou selecione um ou mais arquivos de extrato
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -158,29 +168,34 @@ export const ExtractProcessor = ({ onExtractSaved }: ExtractProcessorProps) => {
           >
             <Upload className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
             <p className="text-lg font-medium mb-2">
-              Arraste o arquivo do extrato aqui
+              Arraste seus arquivos aqui
             </p>
             <p className="text-sm text-muted-foreground mb-4">
               ou
             </p>
             <Input
               type="file"
+              multiple
               accept=".txt,.csv"
               onChange={handleFileSelect}
               className="max-w-xs mx-auto cursor-pointer"
             />
           </div>
 
-          {selectedFile && (
+          {selectedFiles.length > 0 && (
             <div className="p-4 bg-muted rounded-lg">
-              <p className="text-sm font-medium">Arquivo selecionado:</p>
-              <p className="text-sm text-muted-foreground">{selectedFile.name}</p>
+              <p className="text-sm font-medium mb-2">Arquivo(s) selecionado(s):</p>
+              <ul className="text-sm text-muted-foreground list-disc list-inside">
+                {selectedFiles.map((f, i) => (
+                  <li key={i}>{f.name}</li>
+                ))}
+              </ul>
             </div>
           )}
 
           <Button
             onClick={saveExtract}
-            disabled={isProcessing || !extractText}
+            disabled={isProcessing || selectedFiles.length === 0}
             className="w-full"
             size="lg"
           >
@@ -189,22 +204,27 @@ export const ExtractProcessor = ({ onExtractSaved }: ExtractProcessorProps) => {
             ) : (
               <>
                 <FileText className="w-4 h-4 mr-2" />
-                Salvar Extrato
+                Salvar {selectedFiles.length > 1 ? "Extratos" : "Extrato"}
               </>
             )}
           </Button>
         </CardContent>
       </Card>
 
-      {savedFileName && (
+      {savedFileNames.length > 0 && (
         <Card className="border-success">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-success">
               <CheckCircle2 className="w-5 h-5" />
-              Extrato Salvo
+              Extratos Salvos
             </CardTitle>
             <CardDescription>
-              Arquivo: {savedFileName}.txt
+              Arquivos salvos:
+              <ul className="list-disc list-inside mt-2">
+                {savedFileNames.map((name, i) => (
+                  <li key={i}>{name}.txt</li>
+                ))}
+              </ul>
             </CardDescription>
           </CardHeader>
         </Card>

@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { ExtractProcessor } from "@/components/ExtractProcessor";
 import { ExtractList } from "@/components/ExtractList";
-import { CadastroManager } from "@/components/CadastroManager";
-import { ExtractIdentifier } from "@/components/ExtractIdentifier";
+
 import pathworkLogo from "@/assets/pathwork-logo.png";
 
 const Index = () => {
@@ -40,13 +39,7 @@ const Index = () => {
             <ExtractList refreshTrigger={refreshTrigger} />
           </div>
 
-          <div className="mt-8">
-            <CadastroManager />
-          </div>
 
-          <div className="mt-8">
-            <ExtractIdentifier />
-          </div>
         </div>
       </main>
 
