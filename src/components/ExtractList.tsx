@@ -492,34 +492,7 @@ Dt. movimento    Ag. origem        Lote     Histórico                          
             </DialogDescription>
           </DialogHeader>
 
-          {viewingExtract && (
-            <div className="grid grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg mb-4">
-              <div className="text-center">
-                <p className="text-sm font-medium text-muted-foreground">Total Entradas (C)</p>
-                <p className="text-lg font-bold text-blue-600">
-                  {viewingExtract.records
-                    .filter(r => r.type === 'C')
-                    .reduce((acc, curr) => {
-                      const val = parseFloat(curr.valor.replace(/\./g, '').replace(',', '.'));
-                      return acc + (isNaN(val) ? 0 : val);
-                    }, 0)
-                    .toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </p>
-              </div>
-              <div className="text-center">
-                <p className="text-sm font-medium text-muted-foreground">Total Saídas (D)</p>
-                <p className="text-lg font-bold text-red-600">
-                  {viewingExtract.records
-                    .filter(r => r.type === 'D')
-                    .reduce((acc, curr) => {
-                      const val = parseFloat(curr.valor.replace(/\./g, '').replace(',', '.'));
-                      return acc + (isNaN(val) ? 0 : val);
-                    }, 0)
-                    .toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </p>
-              </div>
-            </div>
-          )}
+
 
           <div className="flex-1 overflow-auto border rounded-md">
             <Table>
